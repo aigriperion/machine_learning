@@ -1,116 +1,105 @@
-# 🏠 Prédiction du prix des appartements — DVF
+# Prediction du prix des appartements — DVF
 
 ## Description du projet
 
-Ce projet de Machine Learning a pour objectif de **prédire le prix de vente des appartements** en France à partir du jeu de données ouvert **DVF (Demandes de Valeurs Foncières)**, publié par la Direction Générale des Finances Publiques (DGFiP).
+Ce projet de Machine Learning a pour objectif de **predire le prix de vente des appartements** en France a partir du jeu de donnees ouvert **DVF (Demandes de Valeurs Foncieres)**, publie par la Direction Generale des Finances Publiques (DGFiP).
 
-Les données recensent l'ensemble des transactions immobilières réalisées sur le territoire métropolitain et les DOM-TOM (hors Alsace-Moselle et Mayotte), issues des actes notariés et du cadastre.
+Les donnees recensent l'ensemble des transactions immobilieres realisees sur le territoire metropolitain et les DOM-TOM (hors Alsace-Moselle et Mayotte), issues des actes notaries et du cadastre.
 
-## Source des données
+## Source des donnees
 
-- **Jeu de données** : DVF géolocalisées (Etalab)
+- **Jeu de donnees** : DVF geolocalisees (Etalab)
 - **URL** : https://files.data.gouv.fr/geo-dvf/latest/csv/
-- **Format** : CSV (séparateur virgule, encodage UTF-8)
-- **Granularité** : par département et par commune, organisé par année
+- **Format** : CSV (separateur virgule, encodage UTF-8)
+- **Granularite** : par departement et par commune, organise par annee
+- **Annees** : 2020 a 2025
 
 ## Structure du dataset
 
-Le fichier CSV contient **39 colonnes**. Les principales variables utiles pour la prédiction sont :
+Le fichier CSV contient **39 colonnes**. Les principales variables utiles pour la prediction sont :
 
 | Variable | Description | Type |
 |---|---|---|
 | `id_mutation` | Identifiant unique de la transaction | string |
 | `date_mutation` | Date de la vente (format ISO-8601) | date |
-| `nature_mutation` | Type de mutation (Vente, VEFA, Échange…) | catégorielle |
-| `valeur_fonciere` | **Prix de vente (€)** — variable cible 🎯 | numérique |
+| `nature_mutation` | Type de mutation (Vente, VEFA, Echange…) | categorielle |
+| `valeur_fonciere` | **Prix de vente** — variable cible | numerique |
 | `code_postal` | Code postal du bien | string |
 | `code_commune` | Code INSEE de la commune | string |
 | `nom_commune` | Nom de la commune | string |
-| `code_departement` | Code du département | string |
-| `type_local` | Type de bien (Appartement, Maison, Dépendance, Local) | catégorielle |
-| `surface_reelle_bati` | Surface du bâti en m² | numérique |
-| `nombre_pieces_principales` | Nombre de pièces principales | numérique |
-| `surface_terrain` | Surface du terrain en m² | numérique |
-| `longitude` | Longitude (WGS-84) | numérique |
-| `latitude` | Latitude (WGS-84) | numérique |
-| `lot1_surface_carrez` à `lot5_surface_carrez` | Surface Carrez des lots | numérique |
-| `nombre_lots` | Nombre de lots dans la transaction | numérique |
+| `code_departement` | Code du departement | string |
+| `type_local` | Type de bien (Appartement, Maison, Dependance, Local) | categorielle |
+| `surface_reelle_bati` | Surface du bati en m2 | numerique |
+| `nombre_pieces_principales` | Nombre de pieces principales | numerique |
+| `surface_terrain` | Surface du terrain en m2 | numerique |
+| `longitude` | Longitude (WGS-84) | numerique |
+| `latitude` | Latitude (WGS-84) | numerique |
+| `lot1_surface_carrez` a `lot5_surface_carrez` | Surface Carrez des lots | numerique |
+| `nombre_lots` | Nombre de lots dans la transaction | numerique |
 
 ## Pipeline du projet
 
-### 1. Chargement et exploration des données
-
-```python
-import pandas as pd
-
-df = pd.read_csv("full.csv", low_memory=False)
-print(df.shape)
-df.info()
-df.describe()
-```
+### 1. Chargement et exploration des donnees
+- Chargement des 6 fichiers CSV annuels (2020-2025) depuis `datasets/`
+- Selection des colonnes utiles pour limiter l'usage memoire
+- Statistiques descriptives et analyse des valeurs manquantes
 
 ### 2. Filtrage et nettoyage
-
 - Filtrer uniquement les **ventes** (`nature_mutation == "Vente"`) et les **appartements** (`type_local == "Appartement"`)
-- Supprimer les lignes avec `valeur_fonciere` manquante ou aberrante (ex : < 10 000 € ou > 10 000 000 €)
-- Supprimer les doublons liés aux mutations multi-lots (agréger par `id_mutation`)
-- Filtrer les surfaces incohérentes (`surface_reelle_bati > 0` et < 500 m²)
-- Gérer les valeurs manquantes (latitude, longitude, nombre de pièces)
+- Supprimer les lignes avec `valeur_fonciere` manquante ou aberrante (< 10 000 EUR ou > 10 000 000 EUR)
+- Supprimer les doublons lies aux mutations multi-lots (deduplication par `id_mutation`)
+- Filtrer les surfaces incoherentes (`surface_reelle_bati > 0` et <= 500 m2)
+- Supprimer les lignes sans coordonnees GPS
+- Imputer les valeurs manquantes (nombre de pieces par la mediane)
 
 ### 3. Feature engineering
+- **Extraction temporelle** : annee, mois, trimestre a partir de `date_mutation`
+- **Prix au m2** : `valeur_fonciere / surface_reelle_bati` (indicateur exploratoire)
+- **Surface Carrez** : surface du lot principal
+- **Target encoding** : prix moyen par departement
 
-- **Prix au m²** : `valeur_fonciere / surface_reelle_bati` (indicateur utile pour l'analyse)
-- **Extraction temporelle** : année, mois, trimestre à partir de `date_mutation`
-- **Géolocalisation** : utiliser `latitude` et `longitude` comme features, ou créer des clusters géographiques
-- **Encodage** : encoder `code_departement` ou `code_commune` (label encoding, target encoding…)
+### 4. Analyse exploratoire (EDA)
+- Distribution de la variable cible (brute et log)
+- Prix median au m2 par departement (Top 15)
+- Prix median par nombre de pieces
+- Evolution trimestrielle des prix
+- Matrice de correlation
+- Scatter surface vs prix
 
-### 4. Modélisation
-
-Modèles à explorer :
-
-- **Régression linéaire** : baseline
+### 5. Modelisation
+Modeles entraines :
+- **Regression lineaire** : baseline
+- **Ridge** : regularisation L2
+- **Lasso** : regularisation L1
 - **Random Forest** : robuste aux outliers
-- **Gradient Boosting** (XGBoost / LightGBM) : souvent le plus performant sur ce type de données tabulaires
-- **Ridge / Lasso** : si multicolinéarité
+- **HistGradientBoosting** : equivalent LightGBM integre a scikit-learn
 
-### 5. Évaluation
-
-Métriques utilisées :
-
+### 6. Evaluation
+Metriques utilisees :
 - **MAE** (Mean Absolute Error) : erreur moyenne en euros
-- **RMSE** (Root Mean Squared Error) : pénalise davantage les grosses erreurs
-- **R²** (coefficient de détermination) : proportion de la variance expliquée
+- **RMSE** (Root Mean Squared Error) : penalise davantage les grosses erreurs
+- **R2** (coefficient de determination) : proportion de la variance expliquee
+- **Validation croisee** (5-fold) pour estimer la robustesse du modele
+- Analyse de l'importance des features (permutation importance)
 
-Validation croisée (k-fold) pour estimer la robustesse du modèle.
-
-## Prérequis
+## Prerequis
 
 ```bash
-pip install pandas numpy scikit-learn matplotlib seaborn xgboost lightgbm
+pip install -r requirements.txt
 ```
 
 ## Structure du projet
 
 ```
-├── README.md
-├── data/
-│   └── full.csv              # Données DVF (non versionnées)
-├── notebooks/
-│   ├── 01_exploration.ipynb   # EDA et visualisations
-│   ├── 02_preprocessing.ipynb # Nettoyage et feature engineering
-│   └── 03_modelisation.ipynb  # Entraînement et évaluation
-├── src/
-│   ├── preprocessing.py       # Fonctions de nettoyage
-│   └── models.py              # Entraînement des modèles
-└── requirements.txt
+├── readme.md
+├── requirements.txt
+├── .gitignore
+├── projet.ipynb           # Notebook complet (EDA + modelisation + evaluation)
+└── datasets/              # Donnees DVF (non versionnees)
+    ├── full_2020.csv
+    ├── full_2021.csv
+    ├── full_2022.csv
+    ├── full_2023.csv
+    ├── full_2024.csv
+    └── full_2025.csv
 ```
-
-## Auteur
-
-Projet réalisé dans le cadre d'un TP de Machine Learning — ESAIP.
-
-## Licence
-
-Les données DVF sont en **open data** sous [Licence Ouverte 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence).
-
-> ⚠️ L'utilisation des données DVF ne doit pas permettre la ré-identification des personnes concernées, ni faire l'objet d'une indexation par les moteurs de recherche.

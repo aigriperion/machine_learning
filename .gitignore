@@ -1,1 +1,6 @@
-.venv
+.venv/
+.claude/
+datasets/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
