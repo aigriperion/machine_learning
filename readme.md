@@ -12,7 +12,7 @@ Les donnees recensent l'ensemble des transactions immobilieres realisees sur le 
 - **URL** : https://files.data.gouv.fr/geo-dvf/latest/csv/
 - **Format** : CSV (separateur virgule, encodage UTF-8)
 - **Granularite** : par departement et par commune, organise par annee
-- **Annees** : 2020 a 2025
+- **Annees** : 2021 a 2025 (2020 n'est plus disponible sur data.gouv.fr)
 
 ## Structure du dataset
 
@@ -40,7 +40,7 @@ Le fichier CSV contient **39 colonnes**. Les principales variables utiles pour l
 ## Pipeline du projet
 
 ### 1. Chargement et exploration des donnees
-- Chargement des 6 fichiers CSV annuels (2020-2025) depuis `datasets/`
+- Chargement des 5 fichiers CSV annuels (2021-2025) depuis `datasets/`
 - Selection des colonnes utiles pour limiter l'usage memoire
 - Statistiques descriptives et analyse des valeurs manquantes
 
@@ -96,7 +96,6 @@ pip install -r requirements.txt
 ├── .gitignore
 ├── projet.ipynb           # Notebook complet (EDA + modelisation + evaluation)
 └── datasets/              # Donnees DVF (non versionnees)
-    ├── full_2020.csv
     ├── full_2021.csv
     ├── full_2022.csv
     ├── full_2023.csv
