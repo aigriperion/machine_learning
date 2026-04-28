@@ -1,13 +1,3 @@
-"""Telecharge les fichiers DVF dans datasets/.
-
-Usage : python download_data.py
-
-Utilise urllib (stdlib) pour rester sans dependance externe.
-Taille totale : ~1.2 GB compressee, ~5-6 GB decompressee.
-
-Note : 2020 n'est plus disponible sur data.gouv.fr (retire fin 2025).
-On telecharge donc uniquement 2021-2025 (5 ans, ~15M lignes brutes).
-"""
 import gzip
 import shutil
 import urllib.error
@@ -15,7 +5,7 @@ import urllib.request
 from pathlib import Path
 
 BASE_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv"
-ANNEES = [2021, 2022, 2023, 2024, 2025]
+ANNEES = [2024, 2025]
 DATA_DIR = Path("datasets")
 DATA_DIR.mkdir(exist_ok=True)
 
