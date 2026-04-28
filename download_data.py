@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 BASE_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv"
-ANNEES = [2021, 2022, 2023, 2024, 2025]
+ANNEES = [2024, 2025]
 DATA_DIR = Path("datasets")
 DATA_DIR.mkdir(exist_ok=True)
 

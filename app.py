@@ -2,6 +2,7 @@
 
 Lancement : streamlit run app.py
 """
+import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -33,12 +34,12 @@ page = st.sidebar.radio(
 )
 
 # ---------------------------------------------------------------------------
-# Chargement des données (mis en cache)
+# Fonctions de chargement (mises en cache)
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Chargement des données DVF…")
 def load_data():
     data_dir = Path("datasets")
-    csv_files = sorted(data_dir.glob("full_202[45].csv"))  # 2024 et 2025 uniquement
+    csv_files = sorted(data_dir.glob("full_202[45].csv"))
     if not csv_files:
         return None
 
@@ -52,7 +53,6 @@ def load_data():
     frames = [pd.read_csv(f, usecols=COLS, low_memory=False) for f in csv_files]
     df = pd.concat(frames, ignore_index=True)
 
-    # Filtrage
     df = df[(df["nature_mutation"] == "Vente") & (df["type_local"] == "Appartement")].copy()
     df = df.dropna(subset=["valeur_fonciere"])
     df = df[(df["valeur_fonciere"] >= 10_000) & (df["valeur_fonciere"] <= 10_000_000)]
@@ -62,8 +62,6 @@ def load_data():
     df["nombre_pieces_principales"] = df["nombre_pieces_principales"].fillna(
         df["nombre_pieces_principales"].median()
     )
-
-    # Features
     df["date_mutation"] = pd.to_datetime(df["date_mutation"])
     df["annee"] = df["date_mutation"].dt.year
     df["mois"] = df["date_mutation"].dt.month
@@ -71,11 +69,24 @@ def load_data():
     df["prix_m2"] = df["valeur_fonciere"] / df["surface_reelle_bati"]
     df["surface_carrez"] = df["lot1_surface_carrez"].fillna(0)
     df["surface_par_piece"] = df["surface_reelle_bati"] / df["nombre_pieces_principales"].clip(lower=1)
-
     dept_mean = df.groupby("code_departement")["valeur_fonciere"].mean()
     df["dept_prix_moyen"] = df["code_departement"].map(dept_mean)
-
     return df
+
+
+@st.cache_resource(show_spinner="Chargement du modèle…")
+def load_model_artifacts():
+    needed = ["model.joblib", "dept_encoding.joblib", "fallback.joblib",
+              "features.joblib", "dept_coords.joblib"]
+    if not all(Path(f).exists() for f in needed):
+        return None
+    return {
+        "model":    joblib.load("model.joblib"),
+        "encoding": joblib.load("dept_encoding.joblib"),
+        "fallback": joblib.load("fallback.joblib"),
+        "features": joblib.load("features.joblib"),
+        "coords":   joblib.load("dept_coords.joblib"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +124,6 @@ if page == "A. Contexte & Données":
         col1, col2 = st.columns(2)
         col1.metric("Lignes après nettoyage", f"{len(df):,}")
         col2.metric("Colonnes features", "11")
-
         st.subheader("Aperçu des données")
         st.dataframe(df[["date_mutation", "code_departement", "surface_reelle_bati",
                           "nombre_pieces_principales", "valeur_fonciere"]].head(10))
@@ -170,7 +180,8 @@ elif page == "B. Feature Engineering & EDA":
     with col1:
         st.subheader("Prix par nombre de pièces")
         fig, ax = plt.subplots(figsize=(6, 4))
-        df.groupby("nombre_pieces_principales")["valeur_fonciere"].median().loc[1:7].plot(kind="bar", ax=ax, color="coral")
+        df.groupby("nombre_pieces_principales")["valeur_fonciere"].median().loc[1:7].plot(
+            kind="bar", ax=ax, color="coral")
         ax.set_xlabel("Pièces")
         ax.set_ylabel("Prix médian (EUR)")
         plt.tight_layout()
@@ -208,7 +219,7 @@ elif page == "C. Modélisation & Résultats":
     ### Modèles entraînés
     | Famille | Modèle | Notes |
     |---|---|---|
-    | Linéaire | Régression Linéaire | Baseline — avec StandardScaler + log(y) |
+    | Linéaire | Régression Linéaire | Baseline — avec log(y) |
     | Linéaire | Ridge | Régularisation L2 |
     | Linéaire | Lasso | Régularisation L1 — sélection de variables |
     | Arbres | Random Forest | Robuste, non-linéaire |
@@ -217,8 +228,6 @@ elif page == "C. Modélisation & Résultats":
 
     st.markdown("---")
     st.subheader("Résultats comparatifs")
-
-    # Résultats à mettre à jour après le vrai run
     results = pd.DataFrame([
         {"Modèle": "Régression Linéaire", "R²": "—", "MAE (€)": "—", "MAPE (%)": "—"},
         {"Modèle": "Ridge",               "R²": "—", "MAE (€)": "—", "MAPE (%)": "—"},
@@ -227,7 +236,7 @@ elif page == "C. Modélisation & Résultats":
         {"Modèle": "HistGradientBoosting", "R²": "—", "MAE (€)": "—", "MAPE (%)": "—"},
     ])
     st.dataframe(results, use_container_width=True)
-    st.caption("⚠️ Résultats à remplir après exécution du notebook / script d'entraînement.")
+    st.caption("Résultats à mettre à jour après exécution complète du notebook.")
 
     st.markdown("---")
     st.subheader("Points clés ML")
@@ -237,7 +246,7 @@ elif page == "C. Modélisation & Résultats":
     - Distribution des prix très asymétrique
     - `log(1+prix)` → distribution quasi-normale
     - Re-transformation en euros avec `exp`
-    - Géré automatiquement par `TransformedTargetRegressor`
+    - Géré par `TransformedTargetRegressor`
     """)
     col2.markdown("""
     **Validation croisée 5-fold**
@@ -247,7 +256,7 @@ elif page == "C. Modélisation & Résultats":
     """)
 
     st.subheader("Importance des features")
-    st.info("À compléter après exécution — graphique permutation importance ici.")
+    st.info("À compléter après exécution du notebook — graphique permutation importance.")
 
 
 # ---------------------------------------------------------------------------
@@ -256,30 +265,68 @@ elif page == "C. Modélisation & Résultats":
 elif page == "D. Démo interactive":
     st.title("D. Démo — Estimer un prix d'appartement")
 
+    arts = load_model_artifacts()
+    if arts is None:
+        st.error(
+            "Modèle non trouvé. Exécute la dernière cellule du notebook "
+            "(celle avec `joblib.dump`) puis recharge cette page."
+        )
+        st.stop()
+
+    encoding: pd.Series = arts["encoding"]
+    coords: pd.DataFrame = arts["coords"]
+    model = arts["model"]
+    fallback_price: float = arts["fallback"]
+
+    dept_options = sorted(encoding.index.tolist())
+
     st.markdown("Renseigne les caractéristiques d'un appartement pour obtenir une estimation de prix.")
 
     col1, col2 = st.columns(2)
     with col1:
-        surface = st.slider("Surface (m²)", 10, 300, 65)
-        pieces = st.slider("Nombre de pièces", 1, 8, 3)
-        dept = st.selectbox("Département", ["75 — Paris", "69 — Rhône", "13 — Bouches-du-Rhône",
-                                             "33 — Gironde", "06 — Alpes-Maritimes", "Autre"])
-    with col2:
-        annee = st.selectbox("Année de vente", [2024, 2025])
-        surface_carrez = st.slider("Surface Carrez (m², 0 si non applicable)", 0, 300, 60)
+        surface = st.slider("Surface réelle bâtie (m²)", 10, 300, 65)
+        pieces = st.slider("Nombre de pièces principales", 1, 8, 3)
+        dept_code = st.selectbox(
+            "Département",
+            dept_options,
+            index=dept_options.index("75") if "75" in dept_options else 0,
+        )
         nombre_lots = st.slider("Nombre de lots", 1, 5, 1)
+    with col2:
+        surface_carrez = st.slider("Surface Carrez (m², 0 si non applicable)", 0, 300, int(surface * 0.9))
+        annee = st.selectbox("Année de vente", [2025, 2024])
+        mois = st.slider("Mois", 1, 12, 6)
+
+    trimestre = (mois - 1) // 3 + 1
+    surface_par_piece = surface / max(pieces, 1)
+    lat = float(coords.loc[dept_code, "latitude"]) if dept_code in coords.index else 46.6
+    lon = float(coords.loc[dept_code, "longitude"]) if dept_code in coords.index else 2.3
+    dept_prix_moyen = float(encoding.get(dept_code, fallback_price))
 
     st.markdown("---")
-    st.info("🔧 **En construction** — le modèle entraîné sera chargé ici avec `joblib`. "
-            "Lance le notebook complet puis relance l'app.")
-
-    # Placeholder de prédiction
     if st.button("Estimer le prix", type="primary"):
-        st.warning("Modèle non encore chargé. Entraîne d'abord le notebook.")
-        # Une fois le modèle sauvegardé :
-        # import joblib
-        # model = joblib.load("model.joblib")
-        # dept_encoding = joblib.load("dept_encoding.joblib")
-        # ...
-        # pred = model.predict(X_input)
-        # st.success(f"Prix estimé : {pred[0]:,.0f} €")
+        X_input = pd.DataFrame([{
+            "surface_reelle_bati":        surface,
+            "nombre_pieces_principales":  pieces,
+            "nombre_lots":                nombre_lots,
+            "surface_carrez":             surface_carrez,
+            "surface_par_piece":          surface_par_piece,
+            "longitude":                  lon,
+            "latitude":                   lat,
+            "annee":                      annee,
+            "mois":                       mois,
+            "trimestre":                  trimestre,
+            "dept_prix_moyen":            dept_prix_moyen,
+        }])[arts["features"]]
+
+        pred = float(model.predict(X_input)[0])
+        pred = max(pred, 0)
+
+        col_r1, col_r2, col_r3 = st.columns(3)
+        col_r1.metric("Prix estimé", f"{pred:,.0f} €")
+        col_r2.metric("Prix au m²", f"{pred / surface:,.0f} €/m²")
+        col_r3.metric("Département", dept_code)
+        st.success(
+            f"Estimation basée sur un prix moyen de {dept_prix_moyen:,.0f} € "
+            f"dans le département {dept_code}."
+        )
