@@ -158,8 +158,6 @@ if page == "🏠 Accueil & Contexte":
         """)
 
     st.markdown("---")
-    st.info("💡 **Comment lire cette app** : navigue avec le menu a gauche. "
-            "Chaque page contient les explications a l'oral + les resultats.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -213,10 +211,8 @@ elif page == "📊 Donnees & Nettoyage":
         Le `dept_prix_moyen` est calcule **uniquement sur le jeu d'entrainement**,
         puis applique au test.
 
-        **Pourquoi ?** Si on utilise tout le dataset, le modele "voit" indirectement
-        le prix des biens du test pendant l'entrainement → scores gonfles.
+        Si on utilise tout le dataset → scores gonfles.
 
-        C'est une erreur classique et grave en ML.
         """)
 
     st.markdown("---")
