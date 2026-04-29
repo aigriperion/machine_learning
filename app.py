@@ -35,22 +35,21 @@ st.sidebar.caption("Support oral — DVF 2024-2025")
 # ── Loaders ─────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner="Chargement des donnees…")
 def load_data():
-    """Charge et nettoie le dataset DVF (Maison + Appartement) — meme logique
-    que projet.ipynb, pour que l'EDA de l'app reflete ce qu'on a fait dans le
-    notebook."""
+    """Charge et nettoie le dataset DVF — logique identique a projet.ipynb (nettoyage v4)."""
     data_dir = Path("datasets")
     csv_files = sorted(data_dir.glob("full_202[45].csv"))
     if not csv_files:
         return None
     cols = [
         "id_mutation", "date_mutation", "nature_mutation", "valeur_fonciere",
-        "code_departement", "type_local", "surface_reelle_bati",
+        "code_departement", "code_commune", "type_local", "surface_reelle_bati",
         "nombre_pieces_principales", "surface_terrain", "nombre_lots",
         "lot1_surface_carrez", "longitude", "latitude",
     ]
     frames = [pd.read_csv(f, usecols=cols, low_memory=False) for f in csv_files]
     df = pd.concat(frames, ignore_index=True)
 
+    # Filtres de base
     df = df[
         (df["nature_mutation"] == "Vente")
         & (df["type_local"].isin(["Maison", "Appartement"]))
@@ -66,16 +65,87 @@ def load_data():
         df["nombre_pieces_principales"].median()
     )
     df["surface_terrain"] = df["surface_terrain"].fillna(0)
+    df = df[(df["nombre_pieces_principales"] >= 1) & (df["nombre_pieces_principales"] <= 10)]
+    df = df[df["latitude"].between(41.0, 51.5) & df["longitude"].between(-5.5, 10.0)]
 
+    # Nettoyage agressif v4 — 8 filtres anti-aberrants
+    # [1] Cohérence surface / pièces
+    df["_spp"] = df["surface_reelle_bati"] / df["nombre_pieces_principales"]
+    df = df[(df["_spp"] >= 8) & (df["_spp"] <= 60)].drop(columns=["_spp"])
+
+    # [2] Prix/m² ∈ [1 000 – 10 000]
+    df["_pm2"] = df["valeur_fonciere"] / df["surface_reelle_bati"]
+    df = df[(df["_pm2"] >= 1_000) & (df["_pm2"] <= 10_000)]
+
+    # [3] Bornes absolues par type
+    appart = (df["type_local"] == "Appartement") & df["valeur_fonciere"].between(30_000, 1_500_000)
+    maison = (df["type_local"] == "Maison") & df["valeur_fonciere"].between(40_000, 2_000_000)
+    df = df[appart | maison]
+
+    # [4] IQR × 1.0 par DÉPARTEMENT sur valeur_fonciere
+    def iqr_group(d, grp, col, k=1.0, min_count=30):
+        g = d.groupby(grp)[col]
+        Q1 = g.transform("quantile", 0.25)
+        Q3 = g.transform("quantile", 0.75)
+        IQR = Q3 - Q1
+        counts = g.transform("count")
+        return d[(counts < min_count) | ((d[col] >= Q1 - k * IQR) & (d[col] <= Q3 + k * IQR))]
+
+    df = iqr_group(df, "code_departement", "valeur_fonciere", k=1.0)
+
+    # [5] IQR × 1.0 par DÉPARTEMENT sur prix/m²
+    df = iqr_group(df, "code_departement", "_pm2", k=1.0)
+    df = df.drop(columns=["_pm2"])
+
+    # [6] IQR × 1.5 par TYPE sur surface_reelle_bati
+    for type_bien in ["Maison", "Appartement"]:
+        mask = df["type_local"] == type_bien
+        Q1 = df.loc[mask, "surface_reelle_bati"].quantile(0.25)
+        Q3 = df.loc[mask, "surface_reelle_bati"].quantile(0.75)
+        IQR = Q3 - Q1
+        bi, bs = max(Q1 - 1.5 * IQR, 5), Q3 + 1.5 * IQR
+        df = df[~(mask & ((df["surface_reelle_bati"] < bi) | (df["surface_reelle_bati"] > bs)))]
+
+    # [7] P97 surface_terrain des Maisons
+    mask_mai = df["type_local"] == "Maison"
+    p97 = df.loc[mask_mai, "surface_terrain"].quantile(0.97)
+    df = df[~(mask_mai & (df["surface_terrain"] > p97))]
+
+    # [8] Z-score > 2.5 sur log(valeur_fonciere) par type
+    for type_bien in ["Maison", "Appartement"]:
+        mask = df["type_local"] == type_bien
+        log_p = np.log1p(df.loc[mask, "valeur_fonciere"])
+        z = ((log_p - log_p.mean()) / log_p.std()).abs()
+        df = df.drop(log_p[z > 2.5].index)
+
+    # Feature engineering
     df["date_mutation"] = pd.to_datetime(df["date_mutation"])
     df["annee"]     = df["date_mutation"].dt.year
     df["mois"]      = df["date_mutation"].dt.month
     df["trimestre"] = df["date_mutation"].dt.quarter
-    df["prix_m2"]   = df["valeur_fonciere"] / df["surface_reelle_bati"]
-    df["surface_carrez"]    = df["lot1_surface_carrez"].fillna(0)
+    df["prix_m2"]          = df["valeur_fonciere"] / df["surface_reelle_bati"]
+    df["surface_carrez"]   = df["lot1_surface_carrez"].fillna(0)
     df["surface_par_piece"] = df["surface_reelle_bati"] / df["nombre_pieces_principales"].clip(lower=1)
+    df["log_surface_bati"]    = np.log1p(df["surface_reelle_bati"])
+    df["log_surface_terrain"] = np.log1p(df["surface_terrain"])
+
+    # Target encodings (EDA — recalculés proprement après split en production)
     dept_mean = df.groupby("code_departement")["valeur_fonciere"].mean()
     df["dept_prix_moyen"] = df["code_departement"].map(dept_mean)
+
+    ALPHA = 20
+    comm_stats = df.groupby("code_commune")["valeur_fonciere"].agg(["mean", "count"])
+    comm_stats.columns = ["mean", "count"]
+    comm_to_dept = (
+        df[["code_commune", "code_departement"]]
+        .drop_duplicates("code_commune")
+        .set_index("code_commune")["code_departement"]
+    )
+    comm_stats["dept_mean"] = comm_to_dept.map(dept_mean).fillna(df["valeur_fonciere"].mean())
+    n = comm_stats["count"]
+    comm_stats["smoothed"] = (n * comm_stats["mean"] + ALPHA * comm_stats["dept_mean"]) / (n + ALPHA)
+    df["commune_prix_moyen"] = df["code_commune"].map(comm_stats["smoothed"])
+
     return df
 
 
@@ -188,9 +258,20 @@ elif page == "📊 Donnees & Nettoyage":
         **Etape 5 — GPS manquant**
         - Suppression des lignes sans `longitude` / `latitude`
 
-        **Etape 6 — Imputation**
+        **Etape 6 — Imputation & filtres basiques**
         - `nombre_pieces_principales` manquant → **mediane**
         - `surface_terrain` manquante → **0** (typique des appartements)
+        - Pièces hors [1–10] → supprime ; GPS hors France métropolitaine → supprime
+
+        **Etape 7 — Nettoyage agressif v4 (8 filtres)**
+        1. **Cohérence surface/pièces** : 8 ≤ m²/pièce ≤ 60
+        2. **Prix/m²** ∈ [1 000 – 10 000] EUR/m² (ventes atypiques/symboliques)
+        3. **Bornes absolues par type** : Appartement [30 k–1.5 M], Maison [40 k–2 M]
+        4. **IQR × 1.0 par département** sur `valeur_fonciere` ← resserré vs ×1.5
+        5. **IQR × 1.0 par département** sur prix/m²
+        6. **IQR × 1.5 par type** sur `surface_reelle_bati`
+        7. **P97** sur `surface_terrain` des Maisons
+        8. **Z-score > 2.5** sur `log(valeur_fonciere)` par type
         """)
 
     with col2:
@@ -199,19 +280,28 @@ elif page == "📊 Donnees & Nettoyage":
 
         | Feature creee | Formule | Pourquoi ? |
         |---|---|---|
-        | `annee`, `mois`, `trimestre` | extrait de `date_mutation` | Capturer l'evolution du marche |
-        | `surface_carrez` | `lot1_surface_carrez` (ou 0) | Surface reglementaire en copro |
+        | `mois`, `trimestre` | extrait de `date_mutation` | Saisonnalite du marche |
+        | `surface_carrez` | `lot1_surface_carrez` (ou 0) | Surface reglementaire copro |
         | `surface_par_piece` | surface / pieces | Proxy du confort |
+        | `log_surface_bati` | log(1 + surface) | Non-linearite surface↔prix |
+        | `log_surface_terrain` | log(1 + terrain) | Idem pour le terrain |
         | `prix_m2` | prix / surface | **EDA seulement** — contient la cible |
         | `is_maison` | type_local == Maison | Feature binaire pour la regression |
-        | `dept_prix_moyen` | moyenne des prix par departement | **Target encoding** |
+        | `dept_prix_moyen` | moyenne des prix par departement | Target encoding grossier |
+        | `commune_prix_moyen` | **lissage bayesien** par commune | Target encoding fin ← *levier cle* |
+
+        ## Lissage bayesien (commune_prix_moyen)
+
+        Pour les communes a peu de ventes (ex : 5 obs.), la moyenne brute est instable.
+        On applique : `(n × moy_commune + 20 × moy_dept) / (n + 20)`.
+        Avec peu de ventes → tend vers la moyenne du departement.
+        Avec beaucoup → tend vers la moyenne de la commune.
 
         ## ⚠️ Anti-fuite de donnees (Data Leakage)
 
-        Le `dept_prix_moyen` est calcule **uniquement sur le jeu d'entrainement**,
-        puis applique au test.
-
-        Si on utilise tout le dataset → scores gonfles.
+        `dept_prix_moyen` et `commune_prix_moyen` sont calcules **uniquement sur
+        le jeu d'entrainement**, puis appliques au test (avec fallback departement
+        pour les communes absentes du train).
 
         """)
 
@@ -381,9 +471,10 @@ elif page == "🔬 Analyses Exploratoires":
     # ─── Correlation ──────────────────────────────────────────────────
     st.subheader("8. Matrice de correlation")
     num_cols = [
-        "valeur_fonciere", "surface_reelle_bati", "nombre_pieces_principales",
-        "surface_terrain", "nombre_lots", "surface_carrez",
-        "longitude", "latitude", "dept_prix_moyen",
+        "valeur_fonciere", "surface_reelle_bati", "log_surface_bati",
+        "nombre_pieces_principales", "surface_terrain", "nombre_lots",
+        "surface_carrez", "longitude", "latitude",
+        "dept_prix_moyen", "commune_prix_moyen",
     ]
     corr = df[num_cols].corr()
     fig, ax = plt.subplots(figsize=(10, 7))
@@ -391,8 +482,9 @@ elif page == "🔬 Analyses Exploratoires":
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
-    st.caption("`dept_prix_moyen` et `surface_reelle_bati` sont les plus correlees "
-               "au prix. `surface_carrez` est correlee a la surface bati (logique).")
+    st.caption("`commune_prix_moyen` est la feature la plus correlee au prix — "
+               "bien plus que `dept_prix_moyen`. `log_surface_bati` capture mieux "
+               "la non-linearite surface↔prix que la surface brute.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -442,10 +534,17 @@ elif page == "📈 Regression — Prix":
         les prix eleves et predit mal les biens standards. En travaillant
         sur `log(prix)`, tous les ordres de grandeur ont le meme poids.
 
+        ## Pourquoi commune_prix_moyen change tout ?
+
+        `dept_prix_moyen` moyenne tout un département : Paris 75 mélange
+        Champs-Élysées et Belleville. `commune_prix_moyen` (avec lissage
+        bayésien pour les petites communes) donne la vraie maille locale.
+        C'est le levier principal pour passer de R² ~50 % à 60 %+.
+
         ## Anti-fuite
-        Le target encoding `dept_prix_moyen` est recalcule sur le **train
-        uniquement**, puis applique au test. Sans ce soin, le R² mesure
-        serait artificiellement meilleur que la realite operationnelle.
+        `dept_prix_moyen` et `commune_prix_moyen` sont calcules sur le **train
+        uniquement**, puis appliques au test. Pour les communes absentes du
+        train → fallback département → sinon moyenne globale.
         """)
 
     st.markdown("---")
@@ -687,28 +786,34 @@ elif page == "🔮 Demo Regression":
         annee = st.selectbox("Annee de vente", [2025, 2024])
         mois  = st.slider("Mois", 1, 12, 6)
 
-    trimestre         = (mois - 1) // 3 + 1
-    surface_par_piece = surface / max(pieces, 1)
-    is_maison         = 1 if type_local == "Maison" else 0
+    trimestre           = (mois - 1) // 3 + 1
+    surface_par_piece   = surface / max(pieces, 1)
+    is_maison           = 1 if type_local == "Maison" else 0
+    log_surface_bati    = float(np.log1p(surface))
+    log_surface_terrain = float(np.log1p(surface_terrain))
     lat = float(coords.loc[dept_code, "latitude"])  if dept_code in coords.index else 46.6
     lon = float(coords.loc[dept_code, "longitude"]) if dept_code in coords.index else 2.3
     dept_prix_moyen   = float(encoding.get(dept_code, fallback_val))
+    # commune_prix_moyen : pas de sélection commune dans la démo → on utilise le dept comme proxy
+    commune_prix_moyen = dept_prix_moyen
 
     st.markdown("---")
     if st.button("Estimer le prix", type="primary", use_container_width=True):
         X_in = pd.DataFrame([{
             "surface_reelle_bati":       surface,
+            "log_surface_bati":          log_surface_bati,
             "nombre_pieces_principales": pieces,
             "nombre_lots":               nombre_lots,
             "surface_carrez":            surface_carrez,
             "surface_par_piece":         surface_par_piece,
             "surface_terrain":           surface_terrain,
+            "log_surface_terrain":       log_surface_terrain,
             "longitude":                 lon,
             "latitude":                  lat,
-            "annee":                     annee,
             "mois":                      mois,
             "trimestre":                 trimestre,
             "dept_prix_moyen":           dept_prix_moyen,
+            "commune_prix_moyen":        commune_prix_moyen,
             "is_maison":                 is_maison,
         }])[features_reg]
 
